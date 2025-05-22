@@ -1,5 +1,6 @@
-import heapq
+import pandas as pd, glob, os, re
 from collections import defaultdict
+import heapq
 
 # 1) 1호선
 line1_stations = {
@@ -75,15 +76,47 @@ lines = {
     5: line5_stations
 }
 
-# -----------------------------
-# 2. 그래프 구축 로직 변경
-# -----------------------------
-from collections import defaultdict
-import heapq
-DEFAULT_TRAVEL = 2      # 인접 역 이동 시간(분) 데이터 수집 후 추가 편집 필요
-TRANSFER_TIME  = 2      # 환승 시간(분)
+# ------------------------------------------------------------
+# 0)  CSV → run_times  로딩
+# ------------------------------------------------------------
+def _parse_mmss(time_str: str) -> float:
+    """'1:30' → 1.5  (분 단위 float)"""
+    m, s = map(int, time_str.split(':'))
+    return m + s / 60
 
-def build_graph(lines_dict):
+def load_run_times_csv(folder: str = '역간소요시간(수작업)') -> dict:
+    """폴더 안 *.csv 모두 읽어 (역1, 역2) ↔ 분  dict 반환"""
+    run = {}
+    for path in glob.glob(os.path.join(folder, '*.csv')):
+        df = pd.read_csv(path, encoding='UTF-8')
+        prev = None
+        for _, row in df.iterrows():
+            cur = row['역명'].strip()
+            if pd.isna(row['시간(분)']):
+                continue
+            if prev is not None:
+                t = _parse_mmss(str(row['시간(분)']))
+                run[(prev, cur)] = t
+                run[(cur, prev)] = t   # 역방향 동일
+            prev = cur
+    return run
+
+def edge_time(graph, u, v, default=0):
+    """graph[u] 리스트에서 v 로 가는 가중치를 찾아 반환"""
+    for w, nbr in graph[u]:
+        if nbr == v:
+            return w
+    return default
+
+RUN_TIMES = load_run_times_csv('역간소요시간(수작업)')   # ← 업로드한 CSV 경로
+
+# ------------------------------------------------------------
+# 1)  그래프 생성 : run-times 우선 사용
+# ------------------------------------------------------------
+DEFAULT_TRAVEL = 2      # run_times 에 없는 구간 fallback
+TRANSFER_TIME  = 4      # ↔ 환승 페널티 (원하면 조정)
+
+def build_graph(lines_dict, run_tbl):
     graph = defaultdict(list)
 
     def add_edge(a, b, w):
@@ -91,35 +124,29 @@ def build_graph(lines_dict):
         graph[b].append((w, a))
 
     for ln, data in lines_dict.items():
-        # (A) dict = 여러 구간   (B) list = 단선
         segments = data.values() if isinstance(data, dict) else [data]
-        for key, seg in (data.items() if isinstance(data, dict) else [("linear", data)]):
-            # 인접 역 연결
-            for s1, s2 in zip(seg, seg[1:]):
-                add_edge((ln, s1), (ln, s2), DEFAULT_TRAVEL)
-            # loop이면 마지막-첫 역도 추가
-            if key.endswith("_loop"):
-                add_edge((ln, seg[-1]), (ln, seg[0]), DEFAULT_TRAVEL)
 
-    # 환승 간선
+        for key, seg in (data.items() if isinstance(data, dict) else [("linear", data)]):
+            for s1, s2 in zip(seg, seg[1:]):
+                w = run_tbl.get((s1, s2), run_tbl.get((s2, s1), DEFAULT_TRAVEL))
+                add_edge((ln, s1), (ln, s2), w)
+            if key.endswith("_loop"):                # 원형 Loop 마지막↔첫
+                w = run_tbl.get((seg[-1], seg[0]), run_tbl.get((seg[0], seg[-1]), DEFAULT_TRAVEL))
+                add_edge((ln, seg[-1]), (ln, seg[0]), w)
+
+    # ===== 환승 간선 =====
     station_to_lines = defaultdict(list)
     for ln, data in lines_dict.items():
-        stations_iter = (
-            (st for seg in data.values() for st in seg)
-            if isinstance(data, dict)
-            else data
-        )
-        for st in stations_iter:
+        all_st = (st for seg in data.values() for st in seg) if isinstance(data, dict) else data
+        for st in all_st:
             station_to_lines[st].append(ln)
 
     for st, lns in station_to_lines.items():
-        if len(lns) > 1:
-            for i in range(len(lns)):
-                for j in range(i + 1, len(lns)):
-                    add_edge((lns[i], st), (lns[j], st), TRANSFER_TIME)
+        for i in range(len(lns)):
+            for j in range(i + 1, len(lns)):
+                add_edge((lns[i], st), (lns[j], st), TRANSFER_TIME)
 
     return graph
-
 # -------------------------------------------------------------
 # constants & helpers
 # -------------------------------------------------------------
@@ -133,7 +160,7 @@ def parse_node(token: str):
 # -------------------------------------------------------------
 # 3. 준비: build_graph(lines) 는 그대로
 # -------------------------------------------------------------
-graph = build_graph(lines)
+graph = build_graph(lines, RUN_TIMES)   # 👈 이제 실시간 반영
 
 # 🔑  station → [(line, station)]   역 이름을 노드 리스트로 매핑
 station_to_nodes = defaultdict(list)
@@ -202,9 +229,20 @@ if __name__ == "__main__":
         if path is None:
             print("❌ 경로를 찾지 못했습니다.")
         else:
-            txt = " → ".join([f"{ln}호선 {st}" for ln, st in path])
-            print(f"\n[경로] {txt}")
-            print(f"[소요 시간] {total}분  (역 간 {DEFAULT_TRAVEL}분 / 환승 {TRANSFER_TIME}분 기준)")
+            # ❷  경로 문자열에 구간별 시간 포함
+            pretty = []
+            for i, (ln, st) in enumerate(path):
+                if i == 0:
+                    pretty.append(f"{ln}호선 {st}")
+                else:
+                    w = edge_time(graph, path[i-1], path[i])
+                    pretty.append(f" --{w:.1f}분→ {ln}호선 {st}")
+
+            txt = "".join(pretty)
+
+            # ❸  출력
+            print(f"\n[경로]\n{txt}")
+            print(f"\n[총 소요 시간] {total:.1f}분  (환승 {TRANSFER_TIME}분 포함)")
 
     except Exception as e:
         print("⚠️ 오류:", e)
