@@ -1,6 +1,7 @@
-import pandas as pd, glob, os, heapq, time
-import numpy as np
+import pandas as pd, glob, os, heapq, math
 from collections import defaultdict, deque
+import time
+import numpy as np
 
 # ─────────────────────────────────────────────────────────────
 # 0.  지하철 역 리스트 (1~5호선)
@@ -61,15 +62,18 @@ line5_stations = {
 lines = {1: line1_stations, 2: line2_stations, 3: line3_stations,
          4: line4_stations, 5: line5_stations}
 
+
 # ───────────────────────────── 공통 상수 ─────────────────────────────
 DEFAULT_TRAVEL    = 2        # 역간 데이터 없을 때 기본 주행 시간 (분)
-FALLBACK_TRANSFER = 4        # 환승 CSV에 없을 경우 기본 환승 시간 (분)
-DWELL             = 0.5      # 정차 시간 0.5분 (=30초)
+FALLBACK_TRANSFER = 4        # 환승 CSV에 없을 경우 사용할 기본 환승 시간 (분)
+DWELL             = 0.5      # 각 정거장 도착 시 정차 시간: 0.5분 (=30초)
 TRANSFER_CSV_PATH = "Astar_algorithm/서울교통공사_환승역거리 소요시간 정보_20250331.csv"
+COORD_CSV_PATH    = "Astar_algorithm/station_location/subway_1to5_master.csv"
+
 
 # ───────────────────────────── 헬퍼 함수 ─────────────────────────────
 def _parse_mmss(txt: str) -> float:
-    """'m:ss' → 분(float). 파싱 실패 시 None."""
+    """'m:ss' → 분(float), 파싱 실패 시 None 반환"""
     try:
         m, s = map(int, txt.split(':'))
         return m + s / 60
@@ -79,8 +83,8 @@ def _parse_mmss(txt: str) -> float:
 
 def load_run_times(folder="역간소요시간(수작업)"):
     """
-    폴더 내 CSV 모두 읽어, 인접역 간 주행 시간을 분 단위 dict 로 생성.
-    키: (역A, 역B), 값: float 분
+    CSV 폴더 내 모든 파일을 읽어, 인접역 간 주행 시간을 분(float)으로 반환하는 dict
+    키: (역A, 역B), 값: float(분)
     """
     run = {}
     for p in glob.glob(os.path.join(folder, "*.csv")):
@@ -88,7 +92,8 @@ def load_run_times(folder="역간소요시간(수작업)"):
         prev = None
         for _, row in df.iterrows():
             cur = str(row["역명"]).strip()
-            t_val = _parse_mmss(str(row["시간(분)"]).strip())
+            t_raw = str(row["시간(분)"]).strip()
+            t_val = _parse_mmss(t_raw)
             if t_val is None:
                 prev = cur
                 continue
@@ -100,41 +105,80 @@ def load_run_times(folder="역간소요시간(수작업)"):
 
 def load_transfer_times(csv_path=TRANSFER_CSV_PATH):
     """
-    환승 CSV → ((ln1, station), (ln2, station)) ↔ 환승 시간(분) dict
+    환승 CSV를 읽어서, ((ln1, station), (ln2, station)) 쌍에 대한 환승 시간을 분(float)으로 반환하는 dict 생성
+    CSV 컬럼: 호선 (int), 환승역명 (str), 환승노선 (str), 환승소요시간 (m:ss)
     """
     tbl = {}
-    df = pd.read_csv(csv_path, encoding="cp949")
+    try:
+        df = pd.read_csv(csv_path, encoding="cp949")
+    except Exception as e:
+        raise FileNotFoundError(f"환승 CSV 파일을 읽을 수 없습니다: {e}")
 
     for _, row in df.iterrows():
         ln1 = int(row["호선"])
-        st  = str(row["환승역명"]).strip()
-
-        # '2호선' 같은 문자열에서 숫자만 추출
-        digits = "".join(filter(str.isdigit, str(row["환승노선"])))
-        if not digits:           # 숫자가 없으면 건너뜀
+        station = str(row["환승역명"]).strip()
+        transfer_line_str = str(row["환승노선"]).strip()
+        # '4호선' → '4'
+        digits = "".join(filter(str.isdigit, transfer_line_str))
+        if not digits:
             continue
         ln2 = int(digits)
-
         t_val = _parse_mmss(str(row["환승소요시간"]).strip())
         if t_val is None:
             continue
-
-        tbl[((ln1, st), (ln2, st))] = t_val
-        tbl[((ln2, st), (ln1, st))] = t_val
-
+        tbl[((ln1, station), (ln2, station))] = t_val
+        tbl[((ln2, station), (ln1, station))] = t_val
     return tbl
+
+
+# ───────────────────────────── 0-5호선 전체 좌표 로딩 ────────────────────────────
+def load_coords(csv_path=COORD_CSV_PATH):
+    """
+    subway_1to5_master.csv를 읽어, (호선_int, 역명) → (위도, 경도) 딕셔너리 반환
+    CSV 컬럼: ['line','station_name','latitude','longitude']
+    """
+    coords = {}
+    df = pd.read_csv(csv_path, encoding="utf-8")
+    for _, row in df.iterrows():
+        # CSV의 'line' 컬럼 값 예: '1호선', '2호선' 등
+        line_str = str(row["line"]).strip()
+        if not line_str.endswith("호선"):
+            continue
+        line_int = int(line_str.replace("호선", ""))
+        station = str(row["station_name"]).strip()
+        lat = float(row["latitude"])
+        lng = float(row["longitude"])
+        coords[(line_int, station)] = (lat, lng)
+    return coords
+
+# 하버사인 공식 (두 위·경도 간 직선 거리, 단위: km)
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371  # 지구 반지름 (km)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) \
+        * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c  # 결과: 킬로미터 단위 직선 거리
+
+# 좌표 딕셔너리 전역 생성
+COORDS = load_coords()
+
 
 # ───────────────────────────── 1. CSV → 데이터 테이블 ─────────────────────────────
 RUN_TIMES      = load_run_times()
 TRANSFER_TIMES = load_transfer_times()
 
+
 # ───────────────────────────── 2. 그래프 빌드 ─────────────────────────────
 def build_graph(lines_dict, run_tbl, transfer_tbl):
     """
-    역·노선 데이터를 그래프로 변환.
-    간선 가중치:
-      • 주행 : run_tbl + DWELL
-      • 환승 : transfer_tbl, 없으면 FALLBACK_TRANSFER
+    lines_dict: {호선번호: [역목록] 또는 {key: [역목록], …}} 형식
+    run_tbl:   인접역 주행 시간 딕셔너리
+    transfer_tbl: 환승 시간 딕셔너리
+    → (노드=(호선, 역이름), 가중치, 노드)형태로 양방향 그래프 구성
+      • 주행 간선: run_tbl[(A,B)] + DWELL
+      • 환승 간선: transfer_tbl[(…)], 없으면 FALLBACK_TRANSFER
     """
     g = defaultdict(list)
 
@@ -142,54 +186,61 @@ def build_graph(lines_dict, run_tbl, transfer_tbl):
         g[u].append((w, v))
         g[v].append((w, u))
 
-    # 2-1) 노선별 인접역(주행) 간선
+    # 2-1) 노선별 인접역(주행) 간선 추가 (정차시간 DWELL 포함)
     for ln, data in lines_dict.items():
         segments = data.values() if isinstance(data, dict) else [data]
         for key, seg in (data.items() if isinstance(data, dict) else [("linear", data)]):
             for a, b in zip(seg, seg[1:]):
-                base = run_tbl.get((a, b), run_tbl.get((b, a), DEFAULT_TRAVEL))
-                add((ln, a), (ln, b), base + DWELL)
-            # 순환 구간
+                base_time = run_tbl.get((a, b), run_tbl.get((b, a), DEFAULT_TRAVEL))
+                w = base_time + DWELL
+                add((ln, a), (ln, b), w)
+            # 루프(순환선) 구간
             if key.endswith("_loop"):
                 a, b = seg[-1], seg[0]
-                base = run_tbl.get((a, b), run_tbl.get((b, a), DEFAULT_TRAVEL))
-                add((ln, a), (ln, b), base + DWELL)
+                base_time = run_tbl.get((a, b), run_tbl.get((b, a), DEFAULT_TRAVEL))
+                w = base_time + DWELL
+                add((ln, a), (ln, b), w)
 
-    # 2-2) 역 → 속한 노선 목록
-    st_to_lines = defaultdict(list)
+    # 2-2) 역 이름 기준, 속한 노선 목록 생성
+    station_to_lines = defaultdict(list)
     for ln, data in lines_dict.items():
         sts = (s for seg in data.values() for s in seg) if isinstance(data, dict) else data
         for st in sts:
-            st_to_lines[st].append(ln)
+            station_to_lines[st].append(ln)
 
-    # 2-3) 환승 간선
-    for st, lns in st_to_lines.items():
+    # 2-3) 환승 간선 추가 (CSV 기준, 없으면 FALLBACK_TRANSFER)
+    #     환승 간선에는 별도의 “정차 시간”을 추가하지 않음 (이미 주행 간선에 DWELL이 포함돼 있음)
+    for st, lns in station_to_lines.items():
         for i in range(len(lns)):
             for j in range(i + 1, len(lns)):
-                u, v = (lns[i], st), (lns[j], st)
-                w    = transfer_tbl.get((u, v), FALLBACK_TRANSFER)
+                ln_i = lns[i]
+                ln_j = lns[j]
+                u = (ln_i, st)
+                v = (ln_j, st)
+                w = transfer_tbl.get((u, v), FALLBACK_TRANSFER)
                 add(u, v, w)
 
     return g
 
 
-# 그래프 및 보조 인덱스
+# 최종 그래프 생성
 graph = build_graph(lines, RUN_TIMES, TRANSFER_TIMES)
+
+# 역 이름 → 해당 노드 리스트 (ex: "서울역" → [(1,"서울역"), (4,"서울역")])
 station_to_nodes = defaultdict(list)
 for node in graph:
     station_to_nodes[node[1]].append(node)
 
+
 # ───────────────────────────── 3. 휴리스틱 선계산 (홉 수 기반) ─────────────────────────────
 def precompute_hops(goal_names):
-    """각 역까지 최소 '홉 수'를 BFS로 선계산."""
     nbr = defaultdict(set)
     for (ln, a), edges in graph.items():
         for _, (_, b) in edges:
             nbr[a].add(b)
             nbr[b].add(a)
-
     dist = {g: 0 for g in goal_names}
-    dq   = deque(goal_names)
+    dq = deque(goal_names)
     while dq:
         cur = dq.popleft()
         for nxt in nbr[cur]:
@@ -200,30 +251,62 @@ def precompute_hops(goal_names):
 
 MIN_EDGE = min(w for u in graph for w, _ in graph[u])
 
+
 # ───────────────────────────── 4. A* 탐색 ─────────────────────────────
 def astar(start_name, goal_name):
     if start_name not in station_to_nodes or goal_name not in station_to_nodes:
         raise ValueError("역 이름이 데이터에 없습니다.")
 
-    # 목표 노드(동일 역명) 집합
+    # 목표 노드 집합
     goals = set(station_to_nodes[goal_name])
 
-    # (1) 홉 기반 테이블
+    # (1) 홉 수 기반 테이블: 후순위 휴리스틱용
     h_table = precompute_hops({g[1] for g in goals})
 
-    # (2) 휴리스틱: 남은 홉 × 최소 간선 시간
+    # (2) 위경도 기반 휴리스틱 함수
     def h(node):
-        _, st = node
-        return h_table.get(st, 0) * MIN_EDGE
+        """
+        node: (호선_int, 역명)
+        goals 중 임의의 하나(역명 동일)에 대한 좌표를 사용해 직선 거리 계산
+        """
+        ln_u, st_u = node
+        # 해당 노드 좌표가 없으면, 홉 수 기반으로 대체
+        if (ln_u, st_u) not in COORDS:
+            # 홉 수 기반: 남은 홉 수 × 최소 가중치
+            return h_table.get(st_u, 0) * MIN_EDGE
+
+        # 목표 노드들 중, 같은 역명(goal_name)만 골라서 좌표 비교
+        # (역명은 unique하다고 가정하므로, 사실 goals 안에는 같은 역명 노드가 한두 개)
+        # 두 노드(ln_v, st_v) 모두의 좌표를 구해 최소 직선거리를 선택
+        best_dist = float('inf')
+        lat1, lon1 = COORDS[(ln_u, st_u)]
+        for ln_v, st_v in goals:
+            if st_v != st_u and (ln_v, st_v) in COORDS:
+                lat2, lon2 = COORDS[(ln_v, st_v)]
+                d_km = haversine(lat1, lon1, lat2, lon2)
+                best_dist = min(best_dist, d_km)
+            elif st_v == st_u:
+                # 이미 같은 역명(환승 시), 거리 0
+                best_dist = 0
+                break
+
+        # 최대 지하철 속도를 30 km/h라 가정 → 시간(분) = (거리(km) / 30) * 60
+        # 만약 best_dist가 inf라면(좌표 누락 등), 홉 수 기반으로 대체
+        if best_dist == float('inf'):
+            return h_table.get(st_u, 0) * MIN_EDGE
+        return best_dist / 30 * 60
 
     # 슈퍼 소스 생성
     SUPER = ('S', '')
-    graph[SUPER] = [(0, n) for n in station_to_nodes[start_name]]
+    super_edges = []
+    for n in station_to_nodes[start_name]:
+        super_edges.append((0, n))
+    graph[SUPER] = super_edges
 
     g_cost = {SUPER: 0}
     parent = {SUPER: None}
     pq = []
-    for w, n in graph[SUPER]:
+    for w, n in super_edges:
         g_cost[n] = w
         parent[n] = SUPER
         heapq.heappush(pq, (w + h(n), w, n))
@@ -233,9 +316,10 @@ def astar(start_name, goal_name):
             f, g_acc, u = heapq.heappop(pq)
             if u in goals:
                 path = []
-                while u and u != SUPER:
-                    path.append(u)
-                    u = parent[u]
+                cur = u
+                while cur and cur != SUPER:
+                    path.append(cur)
+                    cur = parent[cur]
                 return path[::-1], g_acc
             if g_acc > g_cost[u]:
                 continue
@@ -249,12 +333,14 @@ def astar(start_name, goal_name):
     finally:
         graph.pop(SUPER, None)
 
+
 # ───────────────────────────── 5. 출력 보조 ─────────────────────────────
 def edge_time(u, v):
     for w, n in graph[u]:
         if n == v:
             return w
     return 0
+
 
 def fmt_path(path):
     segs = []
@@ -263,8 +349,10 @@ def fmt_path(path):
             segs.append(f"{ln}호선 {st}")
         else:
             prev = path[i - 1]
-            segs.append(f" --{edge_time(prev, (ln, st)):.1f}분→ {ln}호선 {st}")
+            t = edge_time(prev, (ln, st))
+            segs.append(f" --{t:.1f}분→ {ln}호선 {st}")
     return "".join(segs)
+
 
 def analysing_alogorithm(s, g, repeats=4000):
     timelist = []
@@ -310,6 +398,7 @@ if __name__ == "__main__":
             print(f"  표준편차  : {summary['std_time']:.6f}초")
             print(f"  bestcase : {summary['best_time']:.6f}초")
             print(f"  worstcase : {summary['worst_time']:.6f}초")
+            
         else:
             print("❌ 경로를 찾지 못했습니다.")
             print(f"[연산 시간] {t1 - t0:.6f}초")
