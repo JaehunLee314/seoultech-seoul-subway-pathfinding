@@ -92,7 +92,7 @@ DWELL             = 0.5   # 정차 (분)
 FALLBACK_TRANSFER = 4.0   # 환승 기본 (분)
 
 DATA_DIR = "Astar_algorithm"  # CSV 위치 (필요 시 경로 수정)
-RUN_TIME_DIR      = os.path.join(DATA_DIR, "역간소요시간(수작업)")
+RUN_TIME_DIR      = "역간소요시간(수작업)"
 TRANSFER_CSV_PATH = os.path.join(DATA_DIR, "서울교통공사_환승역거리 소요시간 정보_20250331.csv")
 COORD_CSV_PATH    = os.path.join(DATA_DIR, "station_location/subway_1to5_master.csv")
 LM_CACHE_PATH     = "landmark_dist.pkl"
