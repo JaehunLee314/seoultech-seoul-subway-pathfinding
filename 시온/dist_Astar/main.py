@@ -2,7 +2,7 @@ import pandas as pd, glob, os, heapq, math
 from collections import defaultdict, deque
 import time
 import numpy as np
-
+import random
 # ─────────────────────────────────────────────────────────────
 # 0.  지하철 역 리스트 (1~5호선)
 # ─────────────────────────────────────────────────────────────
@@ -278,7 +278,6 @@ def edge_time(u, v):
             return w
     return 0
 
-
 def fmt_path(path):
     segs = []
     for i, (ln, st) in enumerate(path):
@@ -286,58 +285,95 @@ def fmt_path(path):
             segs.append(f"{ln}호선 {st}")
         else:
             prev = path[i - 1]
-            t = edge_time(prev, (ln, st))
-            segs.append(f" --{t:.1f}분→ {ln}호선 {st}")
+            segs.append(f" --{edge_time(prev, (ln, st)):.1f}분→ {ln}호선 {st}")
     return "".join(segs)
 
+def generate_station_list():
+    all_stations = set()
 
-def analysing_alogorithm(s, g, repeats=4000):
+    def flatten_station_dict(d):
+        for v in d.values():
+            all_stations.update(v)
+
+    flatten_station_dict(line1_stations)
+    flatten_station_dict(line2_stations)
+    all_stations.update(line3_stations)
+    all_stations.update(line4_stations)
+    flatten_station_dict(line5_stations)
+
+    # ✅ 항상 같은 순서로 정렬
+    return sorted(list(all_stations))  # ← 핵심!
+
+
+def analyse_1000_random_astar(all_stations, sample_count=1000, output_csv="astar_results.csv"):
+    random.seed(42)  # ❶ seed 고정 (반드시 함수 시작 시점에서)
+    
+    pairs = []
+    seen = set()
+
+    while len(pairs) < sample_count:
+        s, g = random.sample(all_stations, 2)
+        if s != g and (s, g) not in seen:
+            pairs.append((s, g))  # ❷ 순서 있는 리스트 사용
+            seen.add((s, g))
+
+    records = []
     timelist = []
-    summary = {"total_time":0,
-               "best_time" :0,
-               "worst_time":0,
-               "mean_time" :0,
-               "std_time"  :0
-                }
-    for i in range(4000):
-        t0, t1 = 0, 0
-        t0 = time.perf_counter()
-        path, total = astar(s, g)
-        t1 = time.perf_counter()
-        elapsed_time = t1-t0
-        timelist.append(elapsed_time)
+    success_count = 0
 
-    summary["total_time"] = sum(timelist)
-    summary["best_time"] = min(timelist)
-    summary["worst_time"] = max(timelist)
-    summary["mean_time"] = np.mean(timelist)
-    summary["std_time"] = np.std(timelist)
+    for i, (s, g) in enumerate(pairs, 1):
+        try:
+            t0 = time.perf_counter()
+            path, total = astar(s, g)
+            t1 = time.perf_counter()
+
+            if path:
+                elapsed = t1 - t0
+                timelist.append(elapsed)
+                success_count += 1
+                formatted_path = fmt_path(path)
+
+                print(f"[{i}] {s} → {g}")
+                print(f"    총 소요 시간: {total:.1f}분")
+                print(f"    경로: {formatted_path}\n")
+
+                records.append({
+                    "start": s,
+                    "goal": g,
+                    "elapsed_sec": round(elapsed, 6),
+                    "total_minutes": round(total, 1),
+                    "path": formatted_path
+                })
+
+        except Exception as e:
+            print(f"[{i}] {s} → {g} ❌ 오류 발생: {e}\n")
+
+    df = pd.DataFrame(records)
+    df.to_csv(output_csv, index=False, encoding='utf-8-sig')
+
+    summary = {
+        "count": success_count,
+        "total_time": sum(timelist),
+        "mean_time": np.mean(timelist) if timelist else 0,
+        "std_time": np.std(timelist) if timelist else 0,
+        "best_time": min(timelist) if timelist else 0,
+        "worst_time": max(timelist) if timelist else 0
+    }
 
     return summary
 
-# ───────────────────────────── 6. CLI ─────────────────────────────
+# ───────────────────────────── CLI ─────────────────────────────
 if __name__ == "__main__":
-    try:
-        s = input("출발역 이름: ").strip()
-        g = input("도착역 이름: ").strip()
-        t0 = time.perf_counter()
-        path, total = astar(s, g)
-        t1 = time.perf_counter()
+    random.seed(42)
 
-        if path:
-            print("\n[경로]\n" + fmt_path(path))
-            print(f"\n[총 소요 시간] {total:.1f}분  (정차 30초 포함)")
-            print(f"[연산 시간] {t1 - t0:.6f}초")
-            print("4000회 실행 결과")
-            summary = analysing_alogorithm(s, g, 4000)
-            print(f"  총합      : {summary['total_time']:.6f}초")
-            print(f"  평균      : {summary['mean_time']:.6f}초")
-            print(f"  표준편차  : {summary['std_time']:.6f}초")
-            print(f"  bestcase : {summary['best_time']:.6f}초")
-            print(f"  worstcase : {summary['worst_time']:.6f}초")
-            
-        else:
-            print("❌ 경로를 찾지 못했습니다.")
-            print(f"[연산 시간] {t1 - t0:.6f}초")
-    except Exception as e:
-        print("⚠️ 오류:", e)
+    all_stations = generate_station_list()
+
+    print("🚀 1000개 랜덤 출발-도착 쌍에 대해 A* 탐색 시작")
+    summary = analyse_1000_random_astar(all_stations, sample_count=1000, output_csv="astar_1000_result.csv")
+
+    print(f"\n📊 [요약] 성공: {summary['count']} / 1000")
+    print(f"  총합      : {summary['total_time']:.6f}초")
+    print(f"  평균      : {summary['mean_time']:.6f}초")
+    print(f"  표준편차  : {summary['std_time']:.6f}초")
+    print(f"  bestcase  : {summary['best_time']:.6f}초")
+    print(f"  worstcase : {summary['worst_time']:.6f}초")
