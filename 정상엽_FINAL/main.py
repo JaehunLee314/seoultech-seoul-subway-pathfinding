@@ -7,18 +7,16 @@ import pickle
 from pathlib import Path
 import shutil
 
-# 캐싱을 위한 전역 변수
 CACHE_DIR = Path("path_cache")
 CACHE_DIR.mkdir(exist_ok=True)
-path_cache = {}  # 이 줄이 있는지 확인
+path_cache = {}  
 
 def clear_cache():
-    """캐시 완전 초기화"""
     global path_cache
-    path_cache.clear()  # 메모리 캐시 초기화
-    shutil.rmtree(CACHE_DIR, ignore_errors=True)  # 파일 캐시 삭제
-    CACHE_DIR.mkdir(exist_ok=True)  # 캐시 디렉토리 재생성
-    print("🗑️ 캐시가 완전히 초기화되었습니다.")
+    path_cache.clear()  
+    shutil.rmtree(CACHE_DIR, ignore_errors=True)  
+    CACHE_DIR.mkdir(exist_ok=True)  
+    print("캐시가 완전히 초기화되었습니다.")
 
 # ─────────────────────────────────────────────────────────────
 # 지하철 역 리스트 (1~5호선) - 기존 유지
@@ -60,7 +58,7 @@ line3_stations = [
     "경찰병원","오금"
 ]
 line4_stations = [
-    "당고개","상계","노원","창동","쌍문","수유","미아","미아사거리","길음","성신여대입구",
+    "진접","오남","별내별가람","당고개","상계","노원","창동","쌍문","수유","미아","미아사거리","길음","성신여대입구",
     "한성대입구","혜화","동대문","동대문역사문화공원","충무로","명동","회현","서울역",
     "숙대입구","삼각지","신용산","이촌","동작","이수","사당","남태령","선바위","경마공원",
     "대공원","과천","정부과천청사","인덕원","평촌","범계","금정","산본","수리산","대야미",
@@ -80,30 +78,24 @@ lines = {1: line1_stations, 2: line2_stations, 3: line3_stations,
          4: line4_stations, 5: line5_stations}
 
 # ───────────────────────────── 공통 상수 ─────────────────────────────
-DEFAULT_TRAVEL    = 2        # 역간 데이터 없을 때 기본 주행 시간 (분)
-FALLBACK_TRANSFER = 4        # 환승 CSV에 없을 경우 기본 환승 시간 (분)
-DWELL             = 0.5      # 정차 시간 0.5분 (=30초)
-TRANSFER_CSV_PATH = "서울교통공사_환승역거리 소요시간 정보_20250331.csv"
+DEFAULT_TRAVEL    = 2        
+FALLBACK_TRANSFER = 4       
+DWELL             = 0.5      
+TRANSFER_CSV_PATH = "dataset/서울교통공사_환승역거리 소요시간 정보_20250331.csv"
 
-# 캐싱을 위한 전역 변수
 CACHE_DIR = Path("path_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 path_cache = {}
 
 # ───────────────────────────── 헬퍼 함수 ─────────────────────────────
 def _parse_mmss(txt: str) -> float:
-    """'m:ss' → 분(float). 파싱 실패 시 None."""
     try:
         m, s = map(int, txt.split(':'))
         return m + s / 60
     except Exception:
         return None
 
-def load_run_times(folder="역간소요시간(수작업)"):
-    """
-    폴더 내 CSV 모두 읽어, 인접역 간 주행 시간을 분 단위 dict 로 생성.
-    키: (역A, 역B), 값: float 분
-    """
+def load_run_times(folder="dataset/역간소요시간(수작업)"):
     run = {}
     for p in glob.glob(os.path.join(folder, "*.csv")):
         df = pd.read_csv(p, encoding="utf-8")
@@ -120,9 +112,6 @@ def load_run_times(folder="역간소요시간(수작업)"):
     return run
 
 def load_transfer_times(csv_path=TRANSFER_CSV_PATH):
-    """
-    환승 CSV → ((ln1, station), (ln2, station)) ↔ 환승 시간(분) dict
-    """
     tbl = {}
     df = pd.read_csv(csv_path, encoding="cp949")
 
@@ -130,9 +119,8 @@ def load_transfer_times(csv_path=TRANSFER_CSV_PATH):
         ln1 = int(row["호선"])
         st  = str(row["환승역명"]).strip()
 
-        # '2호선' 같은 문자열에서 숫자만 추출
         digits = "".join(filter(str.isdigit, str(row["환승노선"])))
-        if not digits:           # 숫자가 없으면 건너뜀
+        if not digits:           
             continue
         ln2 = int(digits)
 
@@ -150,39 +138,30 @@ TRANSFER_TIMES = load_transfer_times()
 
 # ───────────────────────────── 그래프 빌드 ─────────────────────────────
 def build_graph(lines_dict, run_tbl, transfer_tbl):
-    """
-    역·노선 데이터를 그래프로 변환.
-    간선 가중치:
-      • 주행 : run_tbl + DWELL
-      • 환승 : transfer_tbl, 없으면 FALLBACK_TRANSFER
-    """
     g = defaultdict(list)
 
     def add(u, v, w):
         g[u].append((w, v))
         g[v].append((w, u))
 
-    # 2-1) 노선별 인접역(주행) 간선
     for ln, data in lines_dict.items():
         segments = data.values() if isinstance(data, dict) else [data]
         for key, seg in (data.items() if isinstance(data, dict) else [("linear", data)]):
             for a, b in zip(seg, seg[1:]):
                 base = run_tbl.get((a, b), run_tbl.get((b, a), DEFAULT_TRAVEL))
                 add((ln, a), (ln, b), base + DWELL)
-            # 순환 구간
+
             if key.endswith("_loop"):
                 a, b = seg[-1], seg[0]
                 base = run_tbl.get((a, b), run_tbl.get((b, a), DEFAULT_TRAVEL))
                 add((ln, a), (ln, b), base + DWELL)
 
-    # 2-2) 역 → 속한 노선 목록
     st_to_lines = defaultdict(list)
     for ln, data in lines_dict.items():
         sts = (s for seg in data.values() for s in seg) if isinstance(data, dict) else data
         for st in sts:
             st_to_lines[st].append(ln)
 
-    # 2-3) 환승 간선
     for st, lns in st_to_lines.items():
         for i in range(len(lns)):
             for j in range(i + 1, len(lns)):
@@ -192,7 +171,6 @@ def build_graph(lines_dict, run_tbl, transfer_tbl):
 
     return g
 
-# 그래프 및 보조 인덱스
 graph = build_graph(lines, RUN_TIMES, TRANSFER_TIMES)
 station_to_nodes = defaultdict(list)
 for node in graph:
@@ -311,7 +289,7 @@ def parallel_bidirectional_dijkstra(start_name, goal_name):
                     result.forward_distances[current] = current_dist
                     result.forward_parent[current] = parent.get(current)
                     
-                    # 만남 지점 확인
+                    
                     if current in result.backward_distances:
                         total = current_dist + result.backward_distances[current]
                         if total < result.total_distance:
@@ -331,7 +309,7 @@ def parallel_bidirectional_dijkstra(start_name, goal_name):
     def backward_search():
         goal_nodes = station_to_nodes[goal_name]
         
-        # 역방향 그래프 생성
+        
         reverse_graph = defaultdict(list)
         for u, edges in graph.items():
             for w, v in edges:
@@ -358,7 +336,7 @@ def parallel_bidirectional_dijkstra(start_name, goal_name):
                     result.backward_distances[current] = current_dist
                     result.backward_parent[current] = parent.get(current)
                     
-                    # 만남 지점 확인
+                    
                     if current in result.forward_distances:
                         total = current_dist + result.forward_distances[current]
                         if total < result.total_distance:
@@ -375,7 +353,7 @@ def parallel_bidirectional_dijkstra(start_name, goal_name):
         finally:
             reverse_graph.pop(SUPER_B, None)
     
-    # 병렬 실행
+   
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_forward = executor.submit(forward_search)
         future_backward = executor.submit(backward_search)
@@ -386,7 +364,7 @@ def parallel_bidirectional_dijkstra(start_name, goal_name):
     if result.meeting_point is None:
         return None, float('inf')
     
-    # 경로 재구성
+
     path = reconstruct_bidirectional_path(result, start_name, goal_name)
     return path, result.total_distance
 
@@ -429,7 +407,7 @@ def parallel_bidirectional_astar(start_name, goal_name):
                     result.forward_distances[current] = g_acc
                     result.forward_parent[current] = parent.get(current)
                     
-                    # 만남 지점 확인
+                    
                     if current in result.backward_distances:
                         total = g_acc + result.backward_distances[current]
                         if total < result.total_distance:
@@ -449,7 +427,7 @@ def parallel_bidirectional_astar(start_name, goal_name):
     def backward_astar():
         goal_nodes = station_to_nodes[goal_name]
         
-        # 역방향 그래프 생성
+      
         reverse_graph = defaultdict(list)
         for u, edges in graph.items():
             for w, v in edges:
@@ -479,7 +457,7 @@ def parallel_bidirectional_astar(start_name, goal_name):
                     result.backward_distances[current] = g_acc
                     result.backward_parent[current] = parent.get(current)
                     
-                    # 만남 지점 확인
+                   
                     if current in result.forward_distances:
                         total = g_acc + result.forward_distances[current]
                         if total < result.total_distance:
@@ -496,7 +474,7 @@ def parallel_bidirectional_astar(start_name, goal_name):
         finally:
             reverse_graph.pop(SUPER_B, None)
     
-    # 병렬 실행
+   
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_forward = executor.submit(forward_astar)
         future_backward = executor.submit(backward_astar)
@@ -507,7 +485,7 @@ def parallel_bidirectional_astar(start_name, goal_name):
     if result.meeting_point is None:
         return None, float('inf')
     
-    # 경로 재구성
+   
     path = reconstruct_bidirectional_path(result, start_name, goal_name)
     return path, result.total_distance
 
@@ -591,18 +569,14 @@ def astar(start_name, goal_name):
     if start_name not in station_to_nodes or goal_name not in station_to_nodes:
         raise ValueError("역 이름이 데이터에 없습니다.")
 
-    # 목표 노드(동일 역명) 집합
     goals = set(station_to_nodes[goal_name])
 
-    # (1) 홉 기반 테이블
     h_table = precompute_hops({g[1] for g in goals})
 
-    # (2) 휴리스틱: 남은 홉 × 최소 간선 시간
     def h(node):
         _, st = node
         return h_table.get(st, 0) * MIN_EDGE
 
-    # 슈퍼 소스 생성
     SUPER = ('S', '')
     graph[SUPER] = [(0, n) for n in station_to_nodes[start_name]]
 
@@ -652,7 +626,6 @@ def get_station_lines(station_name):
     return lines_set
 
 def select_hubs_by_connectivity(start_name, goal_name):
-    # 출발지와 목적지의 노선 정보 분석
     start_lines = get_station_lines(start_name)
     goal_lines = get_station_lines(goal_name)
     
@@ -663,44 +636,36 @@ def select_hubs_by_connectivity(start_name, goal_name):
             
         hub_lines = get_station_lines(hub)
         
-        # 연결성 점수 계산
         score = 0
-        if hub_lines & start_lines:  # 출발지와 같은 노선
+        if hub_lines & start_lines:  
             score += 3
-        if hub_lines & goal_lines:   # 목적지와 같은 노선
+        if hub_lines & goal_lines: 
             score += 3
-        score += len(hub_lines)      # 허브의 노선 수
+        score += len(hub_lines)      
         
         candidate_hubs.append((hub, score))
     
-    # 점수 순으로 정렬하여 상위 허브들 반환
     candidate_hubs.sort(key=lambda x: x[1], reverse=True)
     return [hub for hub, score in candidate_hubs[:5]]
 
 def pure_hub_based_routing(start_name, goal_name):
-    # 모든 계산을 실시간으로 수행 (캐시 사용 안함)
     direct_path, direct_distance = dijkstra(start_name, goal_name)
     
-    # 허브 선택 (거리 기반이 아닌 노선 연결성 기반)
     selected_hubs = select_hubs_by_connectivity(start_name, goal_name)
     
     best_path = direct_path
     best_distance = direct_distance
     best_route_info = "직접 경로"
     
-    # 선택된 허브들을 통한 경로 탐색 (실시간 계산)
-    for hub in selected_hubs[:3]:  # 상위 3개 허브만 검사
-        # 실시간 계산: 출발지 → 허브 → 목적지
+    for hub in selected_hubs[:3]:  
         path1, dist1 = dijkstra(start_name, hub)
         path2, dist2 = dijkstra(hub, goal_name)
         
         if path1 and path2:
             total_distance = dist1 + dist2
             if total_distance < best_distance:
-                # 경로 병합 (중복 허브 제거)
                 combined_path = path1 + path2[1:]
                 
-                # 목적지가 포함되어 있는지 확인
                 if not combined_path or combined_path[-1][1] != goal_name:
                     goal_nodes = station_to_nodes[goal_name]
                     if goal_nodes:
@@ -724,7 +689,6 @@ def reconstruct_bidirectional_path(result, start_name, goal_name):
     if not result.meeting_point:
         return None
     
-    # 전진 경로
     forward_path = []
     current = result.meeting_point
     while current and current[0] != 'SF':
@@ -732,7 +696,6 @@ def reconstruct_bidirectional_path(result, start_name, goal_name):
         current = result.forward_parent.get(current)
     forward_path.reverse()
     
-    # 후진 경로
     backward_path = []
     current = result.backward_parent.get(result.meeting_point)
     while current and current[0] != 'SB':
@@ -855,7 +818,6 @@ def remove_duplicate_stations(path):
     
     clean_path = [path[0]]
     for station in path[1:]:
-        # 역명만 비교 (노선 정보 제외)
         if station[1] != clean_path[-1][1]:
             clean_path.append(station)
     return clean_path
@@ -921,13 +883,12 @@ def generate_random_pairs(seed=42, num_pairs=100):
 def save_results_to_csv(results, filename="performance_results.csv"):
     with open(filename, mode='w', newline='', encoding='utf-8-sig') as file:
         writer = csv.writer(file)
-        # 헤더 작성
+
         writer.writerow([
             "algorithm", "start", "goal", "path", "stations_count", 
             "travel_time_minutes", "avg_execution_time_seconds"
         ])
         
-        # 데이터 작성
         for result in results:
             path_str = " → ".join(result['path']) if result['path'] else "경로 없음"
             writer.writerow([
@@ -943,7 +904,6 @@ def save_results_to_csv(results, filename="performance_results.csv"):
 def run_performance_test(algorithms_to_test=None, num_pairs=100, runs_per_pair=30, seed=42):
     print(" 성능 테스트 시작...")
     
-    # 테스트할 알고리즘 선택
     if algorithms_to_test is None:
         algorithms_to_test = [
             "dijkstra",
@@ -957,14 +917,12 @@ def run_performance_test(algorithms_to_test=None, num_pairs=100, runs_per_pair=3
             "pure_hub_based_routing"
 ]
     
-    # 무작위 시점-종점 쌍 생성
     print(f" {num_pairs}개 무작위 경로 생성 중... (Seed: {seed})")
     random_pairs = generate_random_pairs(seed=seed, num_pairs=num_pairs)
     print(f" {len(random_pairs)}개 경로 생성 완료")
     
     all_results = []
     
-    # 각 알고리즘별 테스트
     for algo_name in algorithms_to_test:
         if algo_name not in ALGORITHMS:
             print(f" 알고리즘 '{algo_name}' 을 찾을 수 없습니다.")
@@ -973,17 +931,14 @@ def run_performance_test(algorithms_to_test=None, num_pairs=100, runs_per_pair=3
         print(f"\n🔄 {algo_name.upper()} 테스트 중...")
         algorithm_func = ALGORITHMS[algo_name]
         
-        # 각 시점-종점 쌍에 대해 테스트
         for i, (start, goal) in enumerate(random_pairs):
-            if (i + 1) % 20 == 0:  # 진행상황 표시
+            if (i + 1) % 20 == 0: 
                 print(f"   진행률: {i + 1}/{len(random_pairs)} ({(i + 1) / len(random_pairs) * 100:.1f}%)")
             
-            # n회 실행하여 평균 계산
             path, travel_time, avg_exec_time = run_algorithm_n_times(
                 algorithm_func, start, goal, n=runs_per_pair
             )
             
-            # 결과 저장
             result = {
                 'algorithm': algo_name,
                 'start': start,
@@ -996,12 +951,10 @@ def run_performance_test(algorithms_to_test=None, num_pairs=100, runs_per_pair=3
         
         print(f" {algo_name.upper()} 테스트 완료")
     
-    # CSV 파일로 저장
     filename = f"performance_test_results_seed{seed}.csv"
     save_results_to_csv(all_results, filename)
     print(f"\n 결과가 '{filename}' 파일로 저장되었습니다.")
     
-    # 간단한 통계 출력
     print_performance_summary(all_results, algorithms_to_test)
     
     return all_results
@@ -1016,7 +969,6 @@ def print_performance_summary(results, algorithms_to_test):
         if not algo_results:
             continue
             
-        # 성공한 경로만 필터링
         successful_results = [r for r in algo_results if r['avg_exec_time'] > 0]
         
         if successful_results:
@@ -1075,19 +1027,16 @@ if __name__ == "__main__":
             print("\n 경로 상세 비교")
             print("=" * 50)
             
-            # Dijkstra 경로
             path1, distance1 = dijkstra(s, g)
             clean_path1 = remove_duplicate_stations(path1)
             print(f" Dijkstra 경로: {[station for _, station in clean_path1]}")
             print(f"   총 소요시간: {distance1:.1f}분, 경로 길이: {len(clean_path1)}개 역")
             
-            # 순수 Hub 기반 경로
             path2, distance2 = ALGORITHMS["pure_hub_based_routing"](s, g)
             clean_path2 = remove_duplicate_stations(path2)
             print(f" 순수 Hub 기반 경로: {[station for _, station in clean_path2]}")
             print(f"   총 소요시간: {distance2:.1f}분, 경로 길이: {len(clean_path2)}개 역")
             
-            # 차이점 분석
             if clean_path1 and clean_path2:
                 time_diff = distance1 - distance2
                 station_diff = len(clean_path1) - len(clean_path2)
