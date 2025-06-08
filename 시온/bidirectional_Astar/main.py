@@ -316,75 +316,84 @@ def generate_station_list():
     return sorted(list(all_stations))  # ← 핵심!
 
 
-def analyse_1000_random_astar(all_stations, sample_count=1000, output_csv="astar_results.csv"):
-    random.seed(42)  # ❶ seed 고정 (반드시 함수 시작 시점에서)
-    
+def analyse_1000_random_astar(all_stations, sample_count=100, repeats=30,
+                              detail_csv="astar_runs.csv", summary_csv="astar_summary.csv"):
+    random.seed(42)
+    # ❶ 샘플 쌍 생성
     pairs = []
     seen = set()
-
     while len(pairs) < sample_count:
         s, g = random.sample(all_stations, 2)
-        if s != g and (s, g) not in seen:
-            pairs.append((s, g))  # ❷ 순서 있는 리스트 사용
+        if (s, g) not in seen:
+            pairs.append((s, g))
             seen.add((s, g))
 
-    records = []
-    timelist = []
-    success_count = 0
+    detail_records = []
+    summary_records = []
 
+    # ❷ 각 샘플별 반복 실행 및 summary 출력
     for i, (s, g) in enumerate(pairs, 1):
-        try:
-            t0 = time.perf_counter()
-            path, total = bidir_astar(s, g)
-            t1 = time.perf_counter()
+        times = []
+        success = 0
 
-            if path:
-                elapsed = t1 - t0
-                timelist.append(elapsed)
-                success_count += 1
-                formatted_path = fmt_path(path)
+        for r in range(1, repeats + 1):
+            try:
+                t0 = time.perf_counter()
+                path, total = bidir_astar(s, g)
+                t1 = time.perf_counter()
+                if path:
+                    elapsed = t1 - t0
+                    times.append(elapsed)
+                    success += 1
+                    fmt = fmt_path(path)
+                    detail_records.append({
+                        "start": s, "goal": g, "run": r,
+                        "elapsed_sec": round(elapsed, 6),
+                        "total_min": round(total, 1),
+                        "path": fmt
+                    })
+            except Exception:
+                # 실패한 run은 건너뜁니다
+                pass
 
-                print(f"[{i}] {s} → {g}")
-                print(f"    총 소요 시간: {total:.1f}분")
-                print(f"    경로: {formatted_path}\n")
+        # 샘플별 summary 계산
+        mean_sec  = float(np.mean(times)) if times else 0.0
+        std_sec   = float(np.std(times))  if times else 0.0
+        best_sec  = float(min(times))     if times else 0.0
+        worst_sec = float(max(times))     if times else 0.0
 
-                records.append({
-                    "start": s,
-                    "goal": g,
-                    "elapsed_sec": round(elapsed, 6),
-                    "total_minutes": round(total, 1),
-                    "path": formatted_path
-                })
+        # ❸ 샘플별 summary 출력
+        print(f"--- Sample {i}/{sample_count}: {s} → {g} 요약 ---")
+        print(f"  시도 횟수  : {repeats}")
+        print(f"  성공 횟수  : {success}")
+        print(f"  평균 시간  : {mean_sec:.6f}초")
+        print(f"  표준편차   : {std_sec:.6f}초")
+        print(f"  최단 시간  : {best_sec:.6f}초")
+        print(f"  최장 시간  : {worst_sec:.6f}초\n")
 
-        except Exception as e:
-            print(f"[{i}] {s} → {g} ❌ 오류 발생: {e}\n")
+        summary_records.append({
+            "start": s,
+            "goal": g,
+            "runs_attempted": repeats,
+            "runs_successful": success,
+            "mean_sec": mean_sec,
+            "std_sec": std_sec,
+            "best_sec": best_sec,
+            "worst_sec": worst_sec
+        })
 
-    df = pd.DataFrame(records)
-    df.to_csv(output_csv, index=False, encoding='utf-8-sig')
+    # ❹ CSV로 저장
+    pd.DataFrame(detail_records).to_csv(detail_csv, index=False, encoding="utf-8-sig")
+    pd.DataFrame(summary_records).to_csv(summary_csv, index=False, encoding="utf-8-sig")
 
-    summary = {
-        "count": success_count,
-        "total_time": sum(timelist),
-        "mean_time": np.mean(timelist) if timelist else 0,
-        "std_time": np.std(timelist) if timelist else 0,
-        "best_time": min(timelist) if timelist else 0,
-        "worst_time": max(timelist) if timelist else 0
-    }
+    return summary_records
 
-    return summary
 
-# ───────────────────────────── CLI ─────────────────────────────
 if __name__ == "__main__":
     random.seed(42)
 
     all_stations = generate_station_list()
 
     print("🚀 1000개 랜덤 출발-도착 쌍에 대해 A* 탐색 시작")
-    summary = analyse_1000_random_astar(all_stations, sample_count=1000, output_csv="astar_1000_result.csv")
-
-    print(f"\n📊 [요약] 성공: {summary['count']} / 1000")
-    print(f"  총합      : {summary['total_time']:.6f}초")
-    print(f"  평균      : {summary['mean_time']:.6f}초")
-    print(f"  표준편차  : {summary['std_time']:.6f}초")
-    print(f"  bestcase  : {summary['best_time']:.6f}초")
-    print(f"  worstcase : {summary['worst_time']:.6f}초")
+    # per‐sample summary 리스트를 받습니다.
+    summary_records = analyse_1000_random_astar(all_stations, sample_count=100)
