@@ -389,7 +389,7 @@ def analyse_1000_random_astar(all_stations, sample_count=100, repeats=30,
     # ❹ 글로벌 요약 계산
     all_times = [rec["elapsed_sec"] for rec in detail_records]
     global_summary = {
-        "total_runs":             len(all_times),
+        "total_runs":             sample_count * repeats,
         "total_successful_runs":  sum(1 for rec in detail_records),
         "total_time_sec":         float(sum(all_times)),
         "mean_time_sec":          float(np.mean(all_times)) if all_times else 0.0,
