@@ -291,8 +291,14 @@ def generate_station_list():
     return sorted(list(all_stations))  # ← 핵심!
 
 
+import time, random
+import pandas as pd
+import numpy as np
+
 def analyse_1000_random_astar(all_stations, sample_count=100, repeats=30,
-                              detail_csv="astar_runs.csv", summary_csv="astar_summary.csv"):
+                              detail_csv="astar_runs.csv",
+                              summary_csv="astar_summary.csv",
+                              global_csv="global_summary.csv"):
     random.seed(42)
     # ❶ 샘플 쌍 생성
     pairs = []
@@ -328,16 +334,13 @@ def analyse_1000_random_astar(all_stations, sample_count=100, repeats=30,
                         "path": fmt
                     })
             except Exception:
-                # 실패한 run은 건너뜁니다
                 pass
 
-        # 샘플별 summary 계산
         mean_sec  = float(np.mean(times)) if times else 0.0
         std_sec   = float(np.std(times))  if times else 0.0
         best_sec  = float(min(times))     if times else 0.0
         worst_sec = float(max(times))     if times else 0.0
 
-        # ❸ 샘플별 summary 출력
         print(f"--- Sample {i}/{sample_count}: {s} → {g} 요약 ---")
         print(f"  시도 횟수  : {repeats}")
         print(f"  성공 횟수  : {success}")
@@ -357,12 +360,36 @@ def analyse_1000_random_astar(all_stations, sample_count=100, repeats=30,
             "worst_sec": worst_sec
         })
 
-    # ❹ CSV로 저장
+    # ❸ CSV 저장
     pd.DataFrame(detail_records).to_csv(detail_csv, index=False, encoding="utf-8-sig")
     pd.DataFrame(summary_records).to_csv(summary_csv, index=False, encoding="utf-8-sig")
 
-    return summary_records
+    # ❹ 글로벌 요약 계산
+    all_times = [rec["elapsed_sec"] for rec in detail_records]
+    global_summary = {
+        "total_runs":             len(all_times),
+        "total_successful_runs":  sum(1 for rec in detail_records),
+        "total_time_sec":         float(sum(all_times)),
+        "mean_time_sec":          float(np.mean(all_times)) if all_times else 0.0,
+        "std_time_sec":           float(np.std(all_times))  if all_times else 0.0,
+        "best_time_sec":          float(min(all_times))     if all_times else 0.0,
+        "worst_time_sec":         float(max(all_times))     if all_times else 0.0
+    }
 
+    # ❺ 글로벌 요약 출력
+    print("=== 전체(Global) 요약 ===")
+    print(f"  시도 총횟수      : {global_summary['total_runs']}")
+    print(f"  성공 총횟수      : {global_summary['total_successful_runs']}")
+    print(f"  전체 소요 시간  : {global_summary['total_time_sec']:.6f}초")
+    print(f"  전체 평균 시간  : {global_summary['mean_time_sec']:.6f}초")
+    print(f"  전체 표준편차    : {global_summary['std_time_sec']:.6f}초")
+    print(f"  전체 최단 시간  : {global_summary['best_time_sec']:.6f}초")
+    print(f"  전체 최장 시간  : {global_summary['worst_time_sec']:.6f}초\n")
+
+    # ❻ 글로벌 요약 CSV 저장
+    pd.DataFrame([global_summary]).to_csv(global_csv, index=False, encoding="utf-8-sig")
+
+    return summary_records, global_summary
 
 if __name__ == "__main__":
     random.seed(42)
